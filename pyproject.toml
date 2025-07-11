@@ -1,0 +1,16 @@
+[project]
+name = "obsidian-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "dotenv>=0.9.9",
+    "fastmcp>=2.10.4",
+    "langchain>=0.3.26",
+    "langchain-community>=0.3.27",
+    "langchain-ollama>=0.3.4",
+    "langgraph>=0.5.2",
+    "requests>=2.32.4",
+    "sseclient>=0.0.27",
+]
