@@ -29,11 +29,18 @@ pip install -r requirements.txt
 ```
 
 ### 3. 启动 Obsidian MCP 服务器
-```bash
-# 在 obsidian_fastmcp 目录下
-cd ../obsidian_fastmcp
-python -m obsidian_mcp --port 8000
-```
+
+本项目依赖 [Obsidian MCP Server](https://github.com/pnn12138/obsidian_fastmcp) 作为后端 API 服务。
+
+请先前往 [obsidian_fastmcp 仓库](https://github.com/pnn12138/obsidian_fastmcp) 按照说明启动 MCP 服务。
+
+**快速指引：**
+
+1. 克隆 [obsidian_fastmcp](https://github.com/pnn12138/obsidian_fastmcp) 仓库到本地
+2. 按照该仓库的 README 配置环境变量和依赖
+3. 启动 MCP 服务（通常为 `python src/server.py` 或 `python -m obsidian_mcp --port 8000`）
+
+详细步骤请参考 [obsidian_fastmcp 的 README](https://github.com/pnn12138/obsidian_fastmcp#readme)。
 
 ### 4. 测试连接
 ```bash
