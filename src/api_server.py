@@ -6,9 +6,10 @@ import asyncio
 import uvicorn
 from dotenv import load_dotenv
 import os
+import pathlib
 
 # 导入现有的 Agent 代码
-from qwen_agen import get_agent, get_obsidian_tools
+from qwen_agen import get_agent_with_config, get_obsidian_tools
 from langchain.tools import Tool
 
 load_dotenv()
@@ -34,14 +35,29 @@ class ChatResponse(BaseModel):
     conversation_id: str
     status: str = "success"
 
-# 全局变量存储 Agent 实例
+class LLMConfig(BaseModel):
+    provider: str
+    model: str
+    api_key: Optional[str] = ""
+    api_base: Optional[str] = ""
+
+class ConvertFileRequest(BaseModel):
+    file_path: str
+    output_format: str = "markdown"  # "markdown" or "text"
+    output_path: Optional[str] = None
+
+# 全局变量存储 Agent 实例和配置
 agent_instance = None
 conversation_history = {}
+current_llm_config = LLMConfig(provider="ollama", model="qwen3:1.7b")
 
-def initialize_agent():
+def initialize_agent(llm_config: Optional[LLMConfig] = None):
     """初始化 Agent 实例"""
-    global agent_instance
+    global agent_instance, current_llm_config
     try:
+        if llm_config:
+            current_llm_config = llm_config
+            
         # 获取 Obsidian 工具并转换为单输入工具
         obsidian_tools = get_obsidian_tools()
         
@@ -89,9 +105,9 @@ def initialize_agent():
         # 合并所有工具
         tool_list = simple_tools + [weather_tool]
         
-        # 初始化 Agent
-        agent_instance = get_agent(tool_list)
-        print("Agent 初始化成功")
+        # 使用配置初始化 Agent
+        agent_instance = get_agent_with_config(tool_list, current_llm_config)
+        print(f"Agent 初始化成功，使用 {current_llm_config.provider} - {current_llm_config.model}")
         return True
     except Exception as e:
         print(f"Agent 初始化失败: {str(e)}")
@@ -115,8 +131,28 @@ async def health_check():
     return {
         "status": "healthy",
         "agent_initialized": agent_instance is not None,
+        "current_config": current_llm_config.dict(),
         "version": "1.0.0"
     }
+
+@app.post("/configure-llm")
+async def configure_llm(config: LLMConfig):
+    """配置LLM并重新初始化Agent"""
+    global current_llm_config
+    try:
+        # 先测试连接
+        test_result = await test_llm_connection(config.dict())
+        if not test_result["success"]:
+            raise HTTPException(status_code=400, detail=f"LLM连接测试失败: {test_result['error']}")
+        
+        # 重新初始化Agent
+        success = initialize_agent(config)
+        if success:
+            return {"message": "LLM配置成功", "status": "success", "config": config.dict()}
+        else:
+            raise HTTPException(status_code=500, detail="Agent重新初始化失败")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"配置LLM失败: {str(e)}")
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_with_agent(request: ChatRequest):
@@ -134,8 +170,12 @@ async def chat_with_agent(request: ChatRequest):
         if conv_id not in conversation_history:
             conversation_history[conv_id] = []
         
+        print(f"收到消息: {request.message}")
+        
         # 调用 Agent
         result = agent_instance.invoke({"input": request.message})
+        
+        print(f"Agent 返回结果: {result}")
         
         # 提取响应文本
         response_text = result.get("output", str(result))
@@ -153,6 +193,10 @@ async def chat_with_agent(request: ChatRequest):
         )
         
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"处理请求时出错: {str(e)}")
+        print(f"错误详情: {error_details}")
         raise HTTPException(status_code=500, detail=f"处理请求时出错: {str(e)}")
 
 @app.get("/conversations/{conversation_id}")
@@ -238,24 +282,132 @@ async def test_llm_connection(request: dict):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+@app.get("/ollama/models")
+async def get_ollama_models():
+    """获取本地Ollama可用的模型列表"""
+    try:
+        import requests
+        import json
+        
+        # 尝试连接到Ollama API
+        ollama_url = "http://localhost:11434/api/tags"
+        response = requests.get(ollama_url, timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            models = []
+            for model in data.get("models", []):
+                models.append({
+                    "name": model.get("name", ""),
+                    "size": model.get("size", 0),
+                    "modified_at": model.get("modified_at", "")
+                })
+            return {"success": True, "models": models}
+        else:
+            return {"success": False, "error": "无法连接到Ollama服务"}
+            
+    except Exception as e:
+        return {"success": False, "error": f"获取模型列表失败: {str(e)}"}
+
 @app.post("/reload-agent")
 async def reload_agent_endpoint(request: dict):
     """Reload agent with new LLM configuration"""
-    global agent_executor
     try:
         provider = request.get("provider", "ollama")
-        model = request.get("model", "qwen2.5:7b")
+        model = request.get("model", "qwen3:1.7b")
         api_key = request.get("api_key", "")
         api_base = request.get("api_base", "")
-        hybrid_mode = request.get("hybrid_mode", False)
         
-        # Reinitialize the agent with new configuration
-        agent_executor = await initialize_agent(provider, model, api_key, api_base, hybrid_mode)
+        # 创建新的LLM配置
+        config = LLMConfig(
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base
+        )
         
-        return {"success": True, "message": "Agent reloaded successfully"}
+        # 重新初始化Agent
+        success = initialize_agent(config)
+        
+        if success:
+            return {"success": True, "message": "Agent reloaded successfully"}
+        else:
+            return {"success": False, "error": "Agent重新初始化失败"}
         
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+async def convert_file_async(file_path_str: str, use_unstructured: bool):
+    loop = asyncio.get_event_loop()
+    try:
+        if use_unstructured:
+            from unstructured.partition.auto import partition
+            elements = await loop.run_in_executor(None, partition, file_path_str)
+            return "\n\n".join([str(el) for el in elements])
+        else:
+            from markitdown import MarkItDown
+            md = MarkItDown()
+            result = await loop.run_in_executor(None, md.convert, file_path_str)
+            return result.text_content
+    except Exception as e:
+        # 如果 `markitdown` 失败，尝试 `unstructured`
+        if not use_unstructured:
+            print(f"Markitdown 转换失败: {e}，尝试使用 unstructured")
+            return await convert_file_async(file_path_str, use_unstructured=True)
+        raise e
+
+@app.post("/convert-file")
+async def convert_file(request: ConvertFileRequest):
+    """使用Markitdown或Unstructured转换文件"""
+    try:
+        file_path = pathlib.Path(request.file_path)
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail=f"文件不存在: {request.file_path}")
+
+        supported_extensions = {'.pdf', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt', '.txt', '.md', '.html', '.htm', '.jpg', '.png'}
+        if file_path.suffix.lower() not in supported_extensions:
+            raise HTTPException(status_code=400, detail=f"不支持的文件类型: {file_path.suffix}")
+
+        try:
+            # 默认使用 markitdown，但准备好 unstructured 作为后备
+            content = await asyncio.wait_for(convert_file_async(str(file_path), use_unstructured=False), timeout=120.0)
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=408, detail="文件转换超时。请尝试使用unstructured或检查文件内容。")
+        except ImportError as e:
+            raise HTTPException(status_code=500, detail=f"缺少必要的库: {e}。请运行 'pip install markitdown unstructured'。")
+
+        if request.output_format == "text":
+            import re
+            text_content = content
+            text_content = re.sub(r'#+ ', '', text_content)
+            text_content = re.sub(r'\*\*(.*?)\*\*', r'\1', text_content)
+            text_content = re.sub(r'\*(.*?)\*', r'\1', text_content)
+            text_content = re.sub(r'`(.*?)`', r'\1', text_content)
+            content = text_content
+
+        if request.output_path:
+            output_path = pathlib.Path(request.output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            return {
+                "success": True,
+                "message": f"文件已转换并保存到: {output_path}",
+                "output_path": str(output_path),
+                "content": content[:1000] + "..." if len(content) > 1000 else content
+            }
+        else:
+            return {
+                "success": True,
+                "message": "文件转换成功",
+                "content": content
+            }
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"文件转换错误: {str(e)}")
+        print(f"错误详情: {error_details}")
+        raise HTTPException(status_code=500, detail=f"文件转换失败: {str(e)}")
 
 if __name__ == "__main__":
     # 从环境变量获取配置

@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 import os
 load_dotenv()
 
-# 导入 Ollama 聊天模型 - 使用新的导入方式
+# 导入各种LLM
 from langchain_ollama import ChatOllama
 from langchain.agents import initialize_agent, AgentType
 from langchain.tools import Tool
@@ -22,10 +22,53 @@ async def get_tool():
     return tool_list
 
 ##########################################
-# 4) 初始化 Ollama Qwen LLM
+# 4) 初始化 LLM（支持多种提供商）
 ##########################################
 
+def get_llm(provider: str, model: str, api_key: str = "", api_base: str = ""):
+    """根据配置获取LLM实例"""
+    if provider == "ollama":
+        return ChatOllama(
+            model=model,
+            base_url=api_base or "http://localhost:11434",
+            temperature=0,
+        )
+    elif provider == "openai":
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=model,
+            api_key=api_key,
+            base_url=api_base or "https://api.openai.com/v1",
+            temperature=0,
+        )
+    elif provider == "deepseek":
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=model,
+            api_key=api_key,
+            base_url=api_base or "https://api.deepseek.com",
+            temperature=0,
+        )
+    elif provider == "gemini":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        return ChatGoogleGenerativeAI(
+            model=model,
+            google_api_key=api_key,
+            temperature=0,
+        )
+    elif provider == "qwen":
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=model,
+            api_key=api_key,
+            base_url=api_base or "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            temperature=0,
+        )
+    else:
+        raise ValueError(f"不支持的LLM提供商: {provider}")
+
 def get_agent(tool_list):
+    """使用默认Ollama配置初始化Agent（保持向后兼容）"""
     ollama_llm = ChatOllama(
         model="qwen3:1.7b",
         base_url="http://localhost:11434",
@@ -36,6 +79,26 @@ def get_agent(tool_list):
     agent = initialize_agent(
         tools=tool_list,    # 一定要是列表
         llm=ollama_llm,
+        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+        verbose=True,
+        handle_parsing_errors=True,
+        max_iterations=4
+    )
+    return agent
+
+def get_agent_with_config(tool_list, llm_config):
+    """使用指定配置初始化Agent"""
+    llm = get_llm(
+        provider=llm_config.provider,
+        model=llm_config.model,
+        api_key=llm_config.api_key,
+        api_base=llm_config.api_base
+    )
+
+    # 使用 ZERO_SHOT_REACT_DESCRIPTION 类型，这是最稳定的类型
+    agent = initialize_agent(
+        tools=tool_list,    # 一定要是列表
+        llm=llm,
         agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
         verbose=True,
         handle_parsing_errors=True,

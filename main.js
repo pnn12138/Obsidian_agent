@@ -35,9 +35,8 @@ var DEFAULT_SETTINGS = {
   llmProvider: "ollama",
   llmModel: "qwen3:1.7b",
   llmApiKey: "",
-  llmApiBase: "",
-  useHybridMode: false,
-  localOllamaModel: "qwen3:1.7b"
+  llmApiBase: "http://localhost:11434",
+  enableMarkitdown: true
 };
 var VIEW_TYPE_AGENT_CHAT = "agent-chat-view";
 var AgentChatView = class extends import_obsidian.ItemView {
@@ -46,6 +45,7 @@ var AgentChatView = class extends import_obsidian.ItemView {
     this.messages = [];
     this.conversationId = null;
     this.isConnected = false;
+    this.currentAbortController = null;
     this.plugin = plugin;
   }
   setInputText(text) {
@@ -63,37 +63,84 @@ var AgentChatView = class extends import_obsidian.ItemView {
   getIcon() {
     return "bot";
   }
-  async onOpen() {
+  async createChatInterface() {
     const container = this.containerEl.children[1];
     container.empty();
     container.addClass("agent-chat-container");
     const headerEl = container.createEl("div", { cls: "agent-chat-header" });
-    headerEl.createEl("h3", { text: "Obsidian Agent Chat" });
-    const rightContainer = headerEl.createEl("div", { cls: "header-right-container" });
-    const settingsBtn = rightContainer.createEl("button", {
-      cls: "agent-chat-settings-btn",
-      attr: { "aria-label": "\u6253\u5F00\u8BBE\u7F6E" }
+    const titleEl = headerEl.createEl("h3", {
+      cls: "agent-chat-title",
+      text: "Obsidian Agent Chat"
     });
-    settingsBtn.innerHTML = "\u2699\uFE0F";
-    settingsBtn.addEventListener("click", () => {
+    const rightContainer = headerEl.createEl("div", { cls: "agent-chat-controls" });
+    const statusContainer = rightContainer.createEl("div", { cls: "status-container" });
+    const statusIndicator = statusContainer.createEl("div", {
+      cls: `status-indicator ${this.isConnected ? "connected" : "disconnected"}`
+    });
+    const statusText = statusContainer.createEl("span", {
+      cls: "status-text",
+      text: this.isConnected ? "\u5DF2\u8FDE\u63A5" : "\u672A\u8FDE\u63A5"
+    });
+    const reconnectButton = rightContainer.createEl("button", {
+      cls: "reconnect-button",
+      attr: { "aria-label": "\u91CD\u65B0\u8FDE\u63A5" }
+    });
+    reconnectButton.innerHTML = `
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+				<path d="M21 3v5h-5"/>
+				<path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+				<path d="M3 21v-5h5"/>
+			</svg>
+		`;
+    reconnectButton.addEventListener("click", async () => {
+      reconnectButton.disabled = true;
+      reconnectButton.innerHTML = "\u8FDE\u63A5\u4E2D...";
+      await this.testConnection();
+      reconnectButton.disabled = false;
+      reconnectButton.innerHTML = `
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+					<path d="M21 3v5h-5"/>
+					<path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+					<path d="M3 21v-5h5"/>
+				</svg>
+			`;
+    });
+    const settingsButton = rightContainer.createEl("button", {
+      cls: "settings-button",
+      attr: { "aria-label": "\u8BBE\u7F6E" }
+    });
+    settingsButton.innerHTML = `
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<circle cx="12" cy="12" r="3"/>
+				<path d="M12 1v6m0 6v6m11-7h-6m-6 0H1"/>
+			</svg>
+		`;
+    settingsButton.addEventListener("click", () => {
       this.app.setting.open();
-      this.app.setting.openTabById(this.plugin.manifest.id);
+      this.app.setting.openTabById("obsidian-agent-chat");
     });
-    const statusEl = rightContainer.createEl("div", { cls: "agent-chat-status" });
-    this.updateConnectionStatus(statusEl);
     this.chatContainer = container.createEl("div", { cls: "agent-chat-messages" });
     const inputContainer = container.createEl("div", { cls: "agent-chat-input-container" });
-    this.inputElement = inputContainer.createEl("textarea", {
+    const inputWrapper = inputContainer.createEl("div", { cls: "agent-chat-input-wrapper" });
+    this.inputElement = inputWrapper.createEl("textarea", {
       cls: "agent-chat-input",
       attr: {
         placeholder: "\u8F93\u5165\u4F60\u7684\u95EE\u9898...",
-        rows: "3"
+        rows: "1"
       }
     });
-    this.sendButton = inputContainer.createEl("button", {
-      cls: "agent-chat-send-btn",
-      text: "\u53D1\u9001"
+    this.sendButton = inputWrapper.createEl("button", {
+      cls: "agent-chat-send-button",
+      attr: { "aria-label": "\u53D1\u9001\u6D88\u606F" }
     });
+    this.sendButton.innerHTML = `
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<line x1="22" y1="2" x2="11" y2="13"></line>
+				<polygon points="22,2 15,22 11,13 2,9"></polygon>
+			</svg>
+		`;
     this.sendButton.addEventListener("click", () => this.sendMessage());
     this.inputElement.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
@@ -101,8 +148,11 @@ var AgentChatView = class extends import_obsidian.ItemView {
         this.sendMessage();
       }
     });
+    this.inputElement.addEventListener("input", () => {
+      this.inputElement.style.height = "auto";
+      this.inputElement.style.height = Math.min(this.inputElement.scrollHeight, 120) + "px";
+    });
     this.setupFileDragAndDrop();
-    this.addCurrentDocumentButton(inputContainer);
     await this.testConnection();
     this.addMessage({
       id: "welcome",
@@ -111,16 +161,53 @@ var AgentChatView = class extends import_obsidian.ItemView {
       timestamp: new Date()
     });
   }
+  async onOpen() {
+    await this.createChatInterface();
+  }
   updateConnectionStatus(statusEl) {
     statusEl.empty();
-    const indicator = statusEl.createEl("span", {
+    const indicator = statusEl.createEl("div", {
       cls: `status-indicator ${this.isConnected ? "connected" : "disconnected"}`
     });
-    indicator.createEl("span", { cls: "status-dot" });
-    indicator.createEl("span", {
-      text: this.isConnected ? "\u5DF2\u8FDE\u63A5" : "\u672A\u8FDE\u63A5",
-      cls: "status-text"
+    const statusText = statusEl.createEl("span", {
+      cls: "status-text",
+      text: this.isConnected ? "\u5DF2\u8FDE\u63A5" : "\u672A\u8FDE\u63A5"
     });
+  }
+  addMessage(message) {
+    const messageEl = this.chatContainer.createEl("div", {
+      cls: `message ${message.type}`,
+      attr: { "data-message-id": message.id }
+    });
+    const contentEl = messageEl.createEl("div", { cls: "message-content" });
+    const textEl = contentEl.createEl("div", {
+      cls: "message-text"
+    });
+    textEl.style.userSelect = "text";
+    textEl.style.cursor = "text";
+    textEl.style.webkitUserSelect = "text";
+    textEl.style.mozUserSelect = "text";
+    textEl.style.msUserSelect = "text";
+    if (message.id === "loading") {
+      const loadingEl = textEl.createEl("div", { cls: "loading-dots" });
+      loadingEl.createEl("span");
+      loadingEl.createEl("span");
+      loadingEl.createEl("span");
+    } else {
+      const formattedContent = this.formatMessageContent(message.content);
+      textEl.innerHTML = formattedContent;
+    }
+    const timeEl = messageEl.createEl("div", {
+      cls: "message-time",
+      text: message.timestamp.toLocaleTimeString()
+    });
+    this.chatContainer.scrollTop = this.chatContainer.scrollHeight;
+  }
+  removeMessage(messageId) {
+    const messageEl = this.chatContainer.querySelector(`[data-message-id="${messageId}"]`);
+    if (messageEl) {
+      messageEl.remove();
+    }
   }
   async testConnection() {
     try {
@@ -142,15 +229,27 @@ var AgentChatView = class extends import_obsidian.ItemView {
     }
   }
   updateConnectionStatusInView() {
-    const statusEl = this.containerEl.querySelector(".agent-chat-status");
+    const statusEl = this.containerEl.querySelector(".status-indicator");
     if (statusEl) {
-      this.updateConnectionStatus(statusEl);
+      statusEl.className = `status-indicator ${this.isConnected ? "connected" : "disconnected"}`;
+    }
+    const statusTextEl = this.containerEl.querySelector(".status-text");
+    if (statusTextEl) {
+      statusTextEl.textContent = this.isConnected ? "\u5DF2\u8FDE\u63A5" : "\u672A\u8FDE\u63A5";
     }
   }
   async sendMessage() {
     const message = this.inputElement.value.trim();
     if (!message)
       return;
+    if (this.currentAbortController) {
+      this.currentAbortController.abort();
+    }
+    this.currentAbortController = new AbortController();
+    const currentDocPath = this.getCurrentDocumentPath();
+    const fullMessage = currentDocPath ? `${message}
+
+[\u5F53\u524D\u6587\u6863]: ${currentDocPath}` : message;
     this.inputElement.value = "";
     const userMessage = {
       id: Date.now().toString(),
@@ -167,7 +266,7 @@ var AgentChatView = class extends import_obsidian.ItemView {
     };
     this.addMessage(loadingMessage);
     try {
-      const response = await this.callAgentAPI(message);
+      const response = await this.callAgentAPI(fullMessage, this.currentAbortController.signal);
       this.removeMessage("loading");
       const agentMessage = {
         id: Date.now().toString(),
@@ -179,16 +278,35 @@ var AgentChatView = class extends import_obsidian.ItemView {
       this.conversationId = response.conversation_id;
     } catch (error) {
       this.removeMessage("loading");
-      const errorMessage = {
-        id: "error",
-        type: "agent",
-        content: `\u62B1\u6B49\uFF0C\u53D1\u751F\u4E86\u9519\u8BEF\uFF1A${error.message}`,
-        timestamp: new Date()
-      };
-      this.addMessage(errorMessage);
+      if (error.name === "AbortError") {
+        const cancelMessage = {
+          id: "cancelled",
+          type: "agent",
+          content: "\u56DE\u7B54\u5DF2\u505C\u6B62",
+          timestamp: new Date()
+        };
+        this.addMessage(cancelMessage);
+      } else {
+        const errorMessage = {
+          id: "error",
+          type: "agent",
+          content: `\u62B1\u6B49\uFF0C\u53D1\u751F\u4E86\u9519\u8BEF\uFF1A${error.message}`,
+          timestamp: new Date()
+        };
+        this.addMessage(errorMessage);
+      }
+    } finally {
+      this.currentAbortController = null;
     }
   }
-  async callAgentAPI(message) {
+  getCurrentDocumentPath() {
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+    if (activeView && activeView.file) {
+      return activeView.file.path;
+    }
+    return null;
+  }
+  async callAgentAPI(message, signal) {
     const response = await fetch(`${this.plugin.settings.apiUrl}/chat`, {
       method: "POST",
       headers: {
@@ -197,24 +315,13 @@ var AgentChatView = class extends import_obsidian.ItemView {
       body: JSON.stringify({
         message,
         conversation_id: this.conversationId
-      })
+      }),
+      signal
     });
     if (!response.ok) {
       throw new Error(`API \u8BF7\u6C42\u5931\u8D25: ${response.status}`);
     }
     return await response.json();
-  }
-  addMessage(message) {
-    this.messages.push(message);
-    this.renderMessage(message);
-    this.scrollToBottom();
-  }
-  removeMessage(id) {
-    this.messages = this.messages.filter((msg) => msg.id !== id);
-    const messageEl = this.chatContainer.querySelector(`[data-message-id="${id}"]`);
-    if (messageEl) {
-      messageEl.remove();
-    }
   }
   renderMessage(message) {
     const messageEl = this.chatContainer.createEl("div", {
@@ -230,6 +337,17 @@ var AgentChatView = class extends import_obsidian.ItemView {
     textEl.style.msUserSelect = "text";
     const formattedContent = this.formatMessageContent(message.content);
     textEl.innerHTML = formattedContent;
+    if (message.type === "agent" && message.id === "loading" && this.currentAbortController) {
+      const stopButton = contentEl.createEl("button", {
+        cls: "stop-response-button",
+        text: "\u505C\u6B62\u56DE\u7B54"
+      });
+      stopButton.onclick = () => {
+        if (this.currentAbortController) {
+          this.currentAbortController.abort();
+        }
+      };
+    }
     const timeEl = messageEl.createEl("div", {
       cls: "message-time",
       text: message.timestamp.toLocaleTimeString()
@@ -271,45 +389,306 @@ ${filePaths}`;
       }
     });
   }
-  addCurrentDocumentButton(container) {
-    const docInfoBtn = container.createEl("button", {
-      cls: "agent-chat-doc-info-btn",
-      text: "\u{1F4C4}",
-      attr: { "aria-label": "\u83B7\u53D6\u5F53\u524D\u6587\u6863\u4FE1\u606F" }
+  async onClose() {
+  }
+};
+var MarkitdownModal = class extends import_obsidian.Modal {
+  constructor(app, plugin) {
+    super(app);
+    this.selectedFiles = [];
+    this.plugin = plugin;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: "Markitdown \u6587\u4EF6\u8F6C\u6362" });
+    const fileSection = contentEl.createEl("div", { cls: "markitdown-file-section" });
+    fileSection.createEl("h3", { text: "\u9009\u62E9\u8981\u8F6C\u6362\u7684\u6587\u4EF6" });
+    const fileListContainer = fileSection.createEl("div", { cls: "markitdown-file-list" });
+    const addFileButton = fileSection.createEl("button", {
+      text: "\u6DFB\u52A0\u6587\u4EF6",
+      cls: "mod-cta"
     });
-    docInfoBtn.addEventListener("click", () => {
-      const activeView = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
-      if (activeView) {
-        const file = activeView.file;
-        const editor = activeView.editor;
-        const cursor = editor.getCursor();
-        const selection = editor.getSelection();
-        let docInfo = `\u5F53\u524D\u6587\u6863: ${(file == null ? void 0 : file.path) || "\u672A\u77E5"}`;
-        docInfo += `
-\u5F53\u524D\u884C: ${cursor.line + 1}`;
-        docInfo += `
-\u5F53\u524D\u5217: ${cursor.ch + 1}`;
-        if (selection) {
-          docInfo += `
-\u9009\u4E2D\u6587\u672C: "${selection}"`;
-        }
-        const currentText = this.inputElement.value;
-        const newText = currentText ? `${currentText}
-${docInfo}` : docInfo;
-        this.inputElement.value = newText;
-        this.inputElement.focus();
-      } else {
-        new import_obsidian.Notice("\u5F53\u524D\u6CA1\u6709\u6253\u5F00\u7684Markdown\u6587\u6863");
+    addFileButton.onclick = () => {
+      this.showFileSelector(fileListContainer);
+    };
+    const addFolderButton = fileSection.createEl("button", {
+      text: "\u6DFB\u52A0\u6587\u4EF6\u5939",
+      cls: "mod-cta"
+    });
+    addFolderButton.onclick = () => {
+      this.showFolderSelector(fileListContainer);
+    };
+    const optionsSection = contentEl.createEl("div", { cls: "markitdown-options" });
+    optionsSection.createEl("h3", { text: "\u8F6C\u6362\u9009\u9879" });
+    const formatContainer = optionsSection.createEl("div", { cls: "setting-item" });
+    formatContainer.createEl("div", { text: "\u8F93\u51FA\u683C\u5F0F", cls: "setting-item-name" });
+    const formatSelect = formatContainer.createEl("select", { cls: "dropdown" });
+    formatSelect.createEl("option", { value: "markdown", text: "Markdown (.md)" });
+    formatSelect.createEl("option", { value: "text", text: "\u7EAF\u6587\u672C (.txt)" });
+    const saveLocationContainer = optionsSection.createEl("div", { cls: "setting-item" });
+    saveLocationContainer.createEl("div", { text: "\u4FDD\u5B58\u4F4D\u7F6E", cls: "setting-item-name" });
+    const saveLocationSelect = saveLocationContainer.createEl("select", { cls: "dropdown" });
+    saveLocationSelect.createEl("option", { value: "same", text: "\u4E0E\u539F\u6587\u4EF6\u76F8\u540C\u4F4D\u7F6E" });
+    saveLocationSelect.createEl("option", { value: "converted", text: "\u4FDD\u5B58\u5230 converted \u6587\u4EF6\u5939" });
+    const buttonContainer = contentEl.createEl("div", { cls: "markitdown-buttons" });
+    const convertButton = buttonContainer.createEl("button", {
+      text: "\u5F00\u59CB\u8F6C\u6362",
+      cls: "mod-cta"
+    });
+    convertButton.onclick = async () => {
+      if (this.selectedFiles.length === 0) {
+        new import_obsidian.Notice("\u8BF7\u5148\u9009\u62E9\u8981\u8F6C\u6362\u7684\u6587\u4EF6");
+        return;
       }
+      const format = formatSelect.value;
+      const saveLocation = saveLocationSelect.value;
+      await this.convertFiles(format, saveLocation);
+    };
+    const cancelButton = buttonContainer.createEl("button", {
+      text: "\u53D6\u6D88"
+    });
+    cancelButton.onclick = () => {
+      this.close();
+    };
+  }
+  showFileSelector(container) {
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.multiple = true;
+    fileInput.accept = ".pdf,.docx,.pptx,.xlsx,.html,.txt,.rtf,.odt,.odp,.ods";
+    fileInput.onchange = (e) => {
+      const files = e.target.files;
+      if (files) {
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          if (!this.selectedFiles.includes(file.path || file.name)) {
+            this.selectedFiles.push(file.path || file.name);
+          }
+        }
+        this.updateFileList(container);
+      }
+    };
+    fileInput.click();
+  }
+  showFolderSelector(container) {
+    const folderInput = document.createElement("input");
+    folderInput.type = "file";
+    folderInput.setAttribute("webkitdirectory", "");
+    folderInput.setAttribute("directory", "");
+    folderInput.onchange = (e) => {
+      const files = e.target.files;
+      if (files) {
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          if (this.isSupportedFile(file.name) && !this.selectedFiles.includes(file.path || file.name)) {
+            this.selectedFiles.push(file.path || file.name);
+          }
+        }
+        this.updateFileList(container);
+      }
+    };
+    folderInput.click();
+  }
+  isSupportedFile(filename) {
+    const supportedExtensions = [".pdf", ".docx", ".pptx", ".xlsx", ".html", ".txt", ".rtf", ".odt", ".odp", ".ods"];
+    return supportedExtensions.some((ext) => filename.toLowerCase().endsWith(ext));
+  }
+  updateFileList(container) {
+    container.empty();
+    if (this.selectedFiles.length === 0) {
+      container.createEl("p", { text: "\u672A\u9009\u62E9\u6587\u4EF6", cls: "markitdown-no-files" });
+      return;
+    }
+    this.selectedFiles.forEach((filePath, index) => {
+      const fileItem = container.createEl("div", { cls: "markitdown-file-item" });
+      const fileName = fileItem.createEl("span", {
+        text: filePath.split(/[/\\]/).pop() || filePath,
+        cls: "markitdown-file-name"
+      });
+      const removeButton = fileItem.createEl("button", {
+        text: "\xD7",
+        cls: "markitdown-remove-file"
+      });
+      removeButton.onclick = () => {
+        this.selectedFiles.splice(index, 1);
+        this.updateFileList(container);
+      };
     });
   }
-  async onClose() {
+  async convertFiles(format, saveLocation) {
+    const progressNotice = new import_obsidian.Notice("\u6B63\u5728\u8F6C\u6362\u6587\u4EF6...", 0);
+    try {
+      for (const filePath of this.selectedFiles) {
+        await this.convertSingleFile(filePath, format, saveLocation);
+      }
+      progressNotice.hide();
+      new import_obsidian.Notice(`\u6210\u529F\u8F6C\u6362 ${this.selectedFiles.length} \u4E2A\u6587\u4EF6`);
+      this.close();
+    } catch (error) {
+      progressNotice.hide();
+      new import_obsidian.Notice(`\u8F6C\u6362\u5931\u8D25: ${error.message}`);
+      console.error("Markitdown conversion error:", error);
+    }
+  }
+  async convertSingleFile(filePath, format, saveLocation) {
+    try {
+      const response = await fetch(`${this.plugin.settings.apiUrl}/convert-file`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${this.plugin.settings.apiKey}`
+        },
+        body: JSON.stringify({
+          file_path: filePath,
+          output_format: format,
+          save_location: saveLocation
+        })
+      });
+      if (!response.ok) {
+        throw new Error(`\u8F6C\u6362\u5931\u8D25: ${response.statusText}`);
+      }
+      const result = await response.json();
+      console.log("File converted:", result);
+    } catch (error) {
+      console.error(`Failed to convert ${filePath}:`, error);
+      throw error;
+    }
+  }
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
   }
 };
 var AgentChatSettingTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
+    this.serverProcess = null;
+    this.statusCheckInterval = null;
+    this.serverToggle = null;
     this.plugin = plugin;
+  }
+  async checkServerStatus() {
+    try {
+      const response = await fetch(`${this.plugin.settings.apiUrl}/health`, {
+        method: "GET"
+      });
+      return response.ok;
+    } catch (e) {
+      return false;
+    }
+  }
+  async startServer() {
+    var _a, _b;
+    if (this.serverProcess) {
+      new import_obsidian.Notice("\u670D\u52A1\u5668\u5DF2\u5728\u8FD0\u884C\u4E2D");
+      return true;
+    }
+    try {
+      new import_obsidian.Notice("\u{1F680} \u6B63\u5728\u542F\u52A8 API \u670D\u52A1\u5668...");
+      const command = "powershell";
+      const args = [
+        "-Command",
+        `cd '${this.app.vault.adapter.basePath}\\.obsidian\\plugins\\obsidian_agent'; uv run python src/api_server.py`
+      ];
+      const { spawn } = require("child_process");
+      this.serverProcess = spawn(command, args, {
+        detached: false,
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      (_a = this.serverProcess.stdout) == null ? void 0 : _a.on("data", (data) => {
+        const output = data.toString();
+        console.log("Server stdout:", output);
+        if (output.includes("Application startup complete")) {
+          setTimeout(async () => {
+            const isRunning2 = await this.checkServerStatus();
+            if (isRunning2) {
+              new import_obsidian.Notice("\u2705 API \u670D\u52A1\u5668\u542F\u52A8\u6210\u529F\uFF01");
+            }
+          }, 1e3);
+        }
+      });
+      (_b = this.serverProcess.stderr) == null ? void 0 : _b.on("data", (data) => {
+        const error = data.toString();
+        console.error("Server stderr:", error);
+        if (!error.includes("LangChainDeprecationWarning")) {
+          console.error("Server error:", error);
+        }
+      });
+      this.serverProcess.on("error", (error) => {
+        console.error("Failed to start server:", error);
+        new import_obsidian.Notice(`\u274C \u542F\u52A8\u670D\u52A1\u5668\u5931\u8D25: ${error.message}`);
+        this.serverProcess = null;
+      });
+      this.serverProcess.on("exit", (code) => {
+        console.log(`Server process exited with code ${code}`);
+        this.serverProcess = null;
+        if (code !== 0 && code !== null) {
+          new import_obsidian.Notice(`\u26A0\uFE0F \u670D\u52A1\u5668\u8FDB\u7A0B\u9000\u51FA\uFF0C\u4EE3\u7801: ${code}`);
+        }
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5e3));
+      const isRunning = await this.checkServerStatus();
+      if (isRunning) {
+        new import_obsidian.Notice("\u2705 API \u670D\u52A1\u5668\u542F\u52A8\u6210\u529F\uFF01");
+        return true;
+      } else {
+        new import_obsidian.Notice("\u26A0\uFE0F \u670D\u52A1\u5668\u542F\u52A8\u4E2D\uFF0C\u8BF7\u7A0D\u540E\u68C0\u67E5\u72B6\u6001");
+        return false;
+      }
+    } catch (error) {
+      console.error("Error starting server:", error);
+      new import_obsidian.Notice(`\u274C \u542F\u52A8\u670D\u52A1\u5668\u5931\u8D25: ${error}`);
+      this.serverProcess = null;
+      return false;
+    }
+  }
+  async stopServer() {
+    try {
+      if (this.serverProcess) {
+        if (process.platform === "win32") {
+          const { spawn } = require("child_process");
+          spawn("taskkill", ["/pid", this.serverProcess.pid, "/f", "/t"], {
+            stdio: "ignore"
+          });
+        } else {
+          this.serverProcess.kill("SIGTERM");
+        }
+        this.serverProcess = null;
+      }
+      try {
+        await fetch(`${this.plugin.settings.apiUrl}/shutdown`, {
+          method: "POST"
+        });
+      } catch (e) {
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2e3));
+      new import_obsidian.Notice("\u{1F6D1} API \u670D\u52A1\u5668\u5DF2\u505C\u6B62");
+    } catch (error) {
+      new import_obsidian.Notice(`\u274C \u505C\u6B62\u670D\u52A1\u5668\u5931\u8D25\uFF1A${error}`);
+    }
+  }
+  startStatusCheck() {
+    this.stopStatusCheck();
+    this.statusCheckInterval = setInterval(async () => {
+      const isRunning = await this.checkServerStatus();
+      if (this.serverToggle) {
+        const currentValue = this.serverToggle.getValue();
+        if (currentValue !== isRunning) {
+          this.serverToggle.setValue(isRunning);
+          if (!isRunning) {
+            new import_obsidian.Notice("\u26A0\uFE0F API \u670D\u52A1\u5668\u5DF2\u505C\u6B62\u8FD0\u884C");
+            this.stopStatusCheck();
+          }
+        }
+      }
+    }, 1e4);
+  }
+  stopStatusCheck() {
+    if (this.statusCheckInterval) {
+      clearInterval(this.statusCheckInterval);
+      this.statusCheckInterval = null;
+    }
   }
   display() {
     const { containerEl } = this;
@@ -334,10 +713,70 @@ var AgentChatSettingTab = class extends import_obsidian.PluginSettingTab {
       await this.plugin.saveSettings();
       this.display();
     }));
-    new import_obsidian.Setting(containerEl).setName("\u6A21\u578B\u540D\u79F0").setDesc("\u6307\u5B9A\u8981\u4F7F\u7528\u7684\u6A21\u578B\u540D\u79F0").addText((text) => text.setPlaceholder(this.getModelPlaceholder()).setValue(this.plugin.settings.llmModel).onChange(async (value) => {
-      this.plugin.settings.llmModel = value;
-      await this.plugin.saveSettings();
-    }));
+    if (this.plugin.settings.llmProvider === "ollama") {
+      const ollamaModelSetting = new import_obsidian.Setting(containerEl).setName("Ollama \u6A21\u578B").setDesc("\u9009\u62E9\u672C\u5730 Ollama \u6A21\u578B");
+      const controlContainer = ollamaModelSetting.controlEl.createEl("div", {
+        cls: "ollama-model-controls"
+      });
+      const dropdown = controlContainer.createEl("select", { cls: "dropdown" });
+      const refreshButton = controlContainer.createEl("button", {
+        cls: "mod-cta",
+        text: "\u5237\u65B0"
+      });
+      const loadOllamaModels = async () => {
+        try {
+          refreshButton.textContent = "\u52A0\u8F7D\u4E2D...";
+          refreshButton.disabled = true;
+          const response = await fetch(`${this.plugin.settings.apiUrl}/ollama/models`);
+          if (response.ok) {
+            const data = await response.json();
+            dropdown.empty();
+            if (data.models && data.models.length > 0) {
+              data.models.forEach((model) => {
+                const option = dropdown.createEl("option", {
+                  value: model.name,
+                  text: model.name
+                });
+                if (model.name === this.plugin.settings.llmModel) {
+                  option.selected = true;
+                }
+              });
+            } else {
+              dropdown.createEl("option", {
+                value: "",
+                text: "\u672A\u627E\u5230\u6A21\u578B"
+              });
+            }
+          } else {
+            dropdown.empty();
+            dropdown.createEl("option", {
+              value: "",
+              text: "\u52A0\u8F7D\u5931\u8D25"
+            });
+          }
+        } catch (error) {
+          dropdown.empty();
+          dropdown.createEl("option", {
+            value: "",
+            text: "\u8FDE\u63A5\u5931\u8D25"
+          });
+        } finally {
+          refreshButton.textContent = "\u5237\u65B0";
+          refreshButton.disabled = false;
+        }
+      };
+      dropdown.addEventListener("change", async () => {
+        this.plugin.settings.llmModel = dropdown.value;
+        await this.plugin.saveSettings();
+      });
+      refreshButton.addEventListener("click", loadOllamaModels);
+      loadOllamaModels();
+    } else {
+      new import_obsidian.Setting(containerEl).setName("\u6A21\u578B\u540D\u79F0").setDesc("\u6307\u5B9A\u8981\u4F7F\u7528\u7684\u6A21\u578B\u540D\u79F0").addText((text) => text.setPlaceholder(this.getModelPlaceholder()).setValue(this.plugin.settings.llmModel).onChange(async (value) => {
+        this.plugin.settings.llmModel = value;
+        await this.plugin.saveSettings();
+      }));
+    }
     if (this.plugin.settings.llmProvider !== "ollama") {
       new import_obsidian.Setting(containerEl).setName("API \u5BC6\u94A5").setDesc("LLM \u63D0\u4F9B\u5546\u7684 API \u5BC6\u94A5").addText((text) => text.setPlaceholder("\u8F93\u5165 API \u5BC6\u94A5").setValue(this.plugin.settings.llmApiKey).onChange(async (value) => {
         this.plugin.settings.llmApiKey = value;
@@ -348,36 +787,7 @@ var AgentChatSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       }));
     }
-    containerEl.createEl("h3", { text: "\u9AD8\u7EA7\u914D\u7F6E" });
-    new import_obsidian.Setting(containerEl).setName("\u6DF7\u5408\u6A21\u5F0F").setDesc("\u4F7F\u7528 API \u6A21\u578B\u8FDB\u884C\u5BF9\u8BDD\uFF0C\u672C\u5730 Ollama \u6A21\u578B\u6267\u884C\u5DE5\u5177\u8C03\u7528").addToggle((toggle) => toggle.setValue(this.plugin.settings.useHybridMode).onChange(async (value) => {
-      this.plugin.settings.useHybridMode = value;
-      await this.plugin.saveSettings();
-      this.display();
-    }));
-    if (this.plugin.settings.useHybridMode) {
-      new import_obsidian.Setting(containerEl).setName("\u672C\u5730\u5DE5\u5177\u6267\u884C\u6A21\u578B").setDesc("\u7528\u4E8E\u6267\u884C\u672C\u5730\u5DE5\u5177\u7684 Ollama \u6A21\u578B").addText((text) => text.setPlaceholder("qwen3:1.7b").setValue(this.plugin.settings.localOllamaModel).onChange(async (value) => {
-        this.plugin.settings.localOllamaModel = value;
-        await this.plugin.saveSettings();
-      }));
-    }
-    new import_obsidian.Setting(containerEl).setName("\u6D4B\u8BD5\u8FDE\u63A5").setDesc("\u6D4B\u8BD5\u4E0E Agent \u670D\u52A1\u5668\u7684\u8FDE\u63A5").addButton((button) => button.setButtonText("\u6D4B\u8BD5\u8FDE\u63A5").onClick(async () => {
-      try {
-        const response = await fetch(`${this.plugin.settings.apiUrl}/health`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data.agent_initialized) {
-            new import_obsidian.Notice("\u8FDE\u63A5\u6210\u529F\uFF01Agent \u5DF2\u521D\u59CB\u5316");
-          } else {
-            new import_obsidian.Notice("\u8FDE\u63A5\u6210\u529F\uFF0C\u4F46 Agent \u672A\u521D\u59CB\u5316");
-          }
-        } else {
-          new import_obsidian.Notice("\u8FDE\u63A5\u5931\u8D25\uFF1A\u670D\u52A1\u5668\u54CD\u5E94\u9519\u8BEF");
-        }
-      } catch (error) {
-        new import_obsidian.Notice(`\u8FDE\u63A5\u5931\u8D25\uFF1A${error.message}`);
-      }
-    }));
-    new import_obsidian.Setting(containerEl).setName("\u6D4B\u8BD5 LLM \u8FDE\u63A5").setDesc("\u6D4B\u8BD5\u4E0E\u914D\u7F6E\u7684 LLM \u7684\u8FDE\u63A5").addButton((button) => button.setButtonText("\u6D4B\u8BD5\u8FDE\u63A5").onClick(async () => {
+    new import_obsidian.Setting(containerEl).setName("\u6D4B\u8BD5 LLM \u8FDE\u63A5").setDesc("\u6D4B\u8BD5\u4E0E\u914D\u7F6E\u7684 LLM \u7684\u8FDE\u63A5\uFF0C\u6210\u529F\u540E\u81EA\u52A8\u914D\u7F6EAPI\u670D\u52A1\u5668").addButton((button) => button.setButtonText("\u6D4B\u8BD5\u8FDE\u63A5").onClick(async () => {
       button.setButtonText("\u6D4B\u8BD5\u4E2D...");
       button.setDisabled(true);
       try {
@@ -396,7 +806,29 @@ var AgentChatSettingTab = class extends import_obsidian.PluginSettingTab {
         });
         const result = await response.json();
         if (response.ok && result.success) {
-          new import_obsidian.Notice("\u2705 LLM \u8FDE\u63A5\u6210\u529F\uFF01");
+          new import_obsidian.Notice("\u2705 LLM \u8FDE\u63A5\u6210\u529F\uFF01\u6B63\u5728\u914D\u7F6EAPI\u670D\u52A1\u5668...");
+          try {
+            const configResponse = await fetch(`${this.plugin.settings.apiUrl}/configure-llm`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${this.plugin.settings.apiKey}`
+              },
+              body: JSON.stringify({
+                provider: this.plugin.settings.llmProvider,
+                model: this.plugin.settings.llmModel,
+                api_key: this.plugin.settings.llmApiKey,
+                api_base: this.plugin.settings.llmApiBase
+              })
+            });
+            if (configResponse.ok) {
+              new import_obsidian.Notice("\u2705 API\u670D\u52A1\u5668\u914D\u7F6E\u6210\u529F\uFF01");
+            } else {
+              new import_obsidian.Notice("\u26A0\uFE0F LLM\u8FDE\u63A5\u6210\u529F\uFF0C\u4F46API\u670D\u52A1\u5668\u914D\u7F6E\u5931\u8D25");
+            }
+          } catch (configError) {
+            new import_obsidian.Notice("\u26A0\uFE0F LLM\u8FDE\u63A5\u6210\u529F\uFF0C\u4F46API\u670D\u52A1\u5668\u914D\u7F6E\u5931\u8D25");
+          }
         } else {
           new import_obsidian.Notice(`\u274C LLM \u8FDE\u63A5\u5931\u8D25\uFF1A${result.error || "\u672A\u77E5\u9519\u8BEF"}`);
         }
@@ -407,6 +839,44 @@ var AgentChatSettingTab = class extends import_obsidian.PluginSettingTab {
         button.setDisabled(false);
       }
     }));
+    containerEl.createEl("h3", { text: "\u529F\u80FD\u914D\u7F6E" });
+    new import_obsidian.Setting(containerEl).setName("\u542F\u7528 Markitdown \u8F6C\u6362").setDesc("\u542F\u7528\u6587\u4EF6\u8F6C\u6362\u529F\u80FD\uFF0C\u652F\u6301\u5C06 PDF\u3001Word\u3001Excel \u7B49\u6587\u4EF6\u8F6C\u6362\u4E3A Markdown \u683C\u5F0F").addToggle((toggle) => toggle.setValue(this.plugin.settings.enableMarkitdown).onChange(async (value) => {
+      this.plugin.settings.enableMarkitdown = value;
+      await this.plugin.saveSettings();
+    }));
+    const serverControlSetting = new import_obsidian.Setting(containerEl).setName("API \u670D\u52A1\u5668").setDesc("\u542F\u52A8\u6216\u505C\u6B62\u672C\u5730 API \u670D\u52A1\u5668");
+    let isServerRunning = false;
+    this.serverToggle = serverControlSetting.addToggle((toggle) => toggle.setValue(isServerRunning).onChange(async (value) => {
+      if (value && !isServerRunning) {
+        toggle.setDisabled(true);
+        const success = await this.startServer();
+        isServerRunning = success;
+        toggle.setValue(success);
+        toggle.setDisabled(false);
+        if (success) {
+          this.startStatusCheck();
+        }
+      } else if (!value && isServerRunning) {
+        toggle.setDisabled(true);
+        await this.stopServer();
+        setTimeout(async () => {
+          const stillRunning = await this.checkServerStatus();
+          isServerRunning = stillRunning;
+          toggle.setValue(stillRunning);
+          toggle.setDisabled(false);
+          if (!stillRunning) {
+            this.stopStatusCheck();
+          }
+        }, 3e3);
+      }
+    }));
+    this.checkServerStatus().then((running) => {
+      isServerRunning = running;
+      this.serverToggle.setValue(isServerRunning);
+      if (running) {
+        this.startStatusCheck();
+      }
+    });
     new import_obsidian.Setting(containerEl).setName("\u91CD\u65B0\u52A0\u8F7D Agent").setDesc("\u4F7F\u7528\u65B0\u914D\u7F6E\u91CD\u65B0\u52A0\u8F7D Agent").addButton((button) => button.setButtonText("\u91CD\u65B0\u52A0\u8F7D").onClick(async () => {
       button.setButtonText("\u91CD\u65B0\u52A0\u8F7D\u4E2D...");
       button.setDisabled(true);
@@ -421,8 +891,7 @@ var AgentChatSettingTab = class extends import_obsidian.PluginSettingTab {
             provider: this.plugin.settings.llmProvider,
             model: this.plugin.settings.llmModel,
             api_key: this.plugin.settings.llmApiKey,
-            api_base: this.plugin.settings.llmApiBase,
-            hybrid_mode: this.plugin.settings.useHybridMode
+            api_base: this.plugin.settings.llmApiBase
           })
         });
         const result = await response.json();
@@ -480,6 +949,13 @@ var AgentChatPlugin = class extends import_obsidian.Plugin {
     this.addRibbonIcon("bot", "Agent Chat", (evt) => {
       this.activateView();
     });
+    this.addRibbonIcon("file-text", "Markitdown\u8F6C\u6362", (evt) => {
+      if (this.settings.enableMarkitdown) {
+        this.showMarkitdownModal();
+      } else {
+        new import_obsidian.Notice("Markitdown\u8F6C\u6362\u529F\u80FD\u5DF2\u7981\u7528\uFF0C\u8BF7\u5728\u8BBE\u7F6E\u4E2D\u542F\u7528");
+      }
+    });
     this.addCommand({
       id: "open-agent-chat",
       name: "\u6253\u5F00 Agent Chat",
@@ -525,13 +1001,7 @@ ${selectedText}`;
           item.setTitle("\u603B\u7ED3\u5F53\u524D\u6587\u6863").setIcon("file-text").onClick(() => {
             const currentFile = view.file;
             if (currentFile) {
-              const content = editor.getValue();
-              const summaryPrompt = `\u8BF7\u603B\u7ED3\u4EE5\u4E0B\u6587\u6863\u5185\u5BB9\uFF1A
-
-\u6587\u4EF6\u540D\uFF1A${currentFile.name}
-
-\u5185\u5BB9\uFF1A
-${content}`;
+              const summaryPrompt = `\u8BF7\u603B\u7ED3\u8FD9\u4E2A\u6587\u6863\uFF1A${currentFile.path}`;
               this.activateViewWithText(summaryPrompt);
             }
           });
@@ -543,13 +1013,7 @@ ${content}`;
         menu.addItem((item) => {
           item.setTitle("\u4E0EAgent\u8BA8\u8BBA\u6B64\u6587\u4EF6").setIcon("bot").onClick(async () => {
             if (file) {
-              const content = await this.app.vault.read(file);
-              const discussPrompt = `\u6211\u60F3\u8BA8\u8BBA\u8FD9\u4E2A\u6587\u4EF6\uFF1A
-
-\u6587\u4EF6\u540D\uFF1A${file.name}
-
-\u5185\u5BB9\uFF1A
-${content}`;
+              const discussPrompt = `\u6587\u4EF6\u8DEF\u5F84\uFF1A${file.path}`;
               this.activateViewWithText(discussPrompt);
             }
           });
@@ -595,5 +1059,33 @@ ${content}`;
   }
   async saveSettings() {
     await this.saveData(this.settings);
+    await this.syncLLMConfig();
+  }
+  async syncLLMConfig() {
+    try {
+      const response = await fetch(`${this.settings.apiUrl}/configure-llm`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${this.settings.apiKey}`
+        },
+        body: JSON.stringify({
+          provider: this.settings.llmProvider,
+          model: this.settings.llmModel,
+          api_key: this.settings.llmApiKey,
+          api_base: this.settings.llmApiBase
+        })
+      });
+      if (response.ok) {
+        console.log("LLM\u914D\u7F6E\u5DF2\u540C\u6B65\u5230API\u670D\u52A1\u5668");
+      } else {
+        console.warn("LLM\u914D\u7F6E\u540C\u6B65\u5931\u8D25:", await response.text());
+      }
+    } catch (error) {
+      console.warn("LLM\u914D\u7F6E\u540C\u6B65\u5931\u8D25:", error);
+    }
+  }
+  showMarkitdownModal() {
+    new MarkitdownModal(this.app, this).open();
   }
 };

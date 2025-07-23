@@ -6,6 +6,7 @@
   "llmModel": "qwen3:4b",
   "llmApiKey": "",
   "llmApiBase": "",
+  "enableMarkitdown": true,
   "useHybridMode": false,
   "localOllamaModel": "qwen3:1.7b"
 }
