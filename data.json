@@ -1,0 +1,11 @@
+{
+  "apiUrl": "http://127.0.0.1:8001",
+  "apiKey": "",
+  "autoConnect": true,
+  "llmProvider": "ollama",
+  "llmModel": "qwen3:4b",
+  "llmApiKey": "",
+  "llmApiBase": "",
+  "useHybridMode": false,
+  "localOllamaModel": "qwen3:1.7b"
+}

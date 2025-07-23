@@ -1,0 +1,11 @@
+{
+	"id": "obsidian-agent-chat",
+	"name": "Obsidian Agent Chat",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "与基于 LangChain 的智能 Agent 进行对话，管理你的 Obsidian 笔记库",
+	"author": "Obsidian Agent Developer",
+	"authorUrl": "",
+	"fundingUrl": "",
+	"isDesktopOnly": false
+}

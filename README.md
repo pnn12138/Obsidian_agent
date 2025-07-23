@@ -1,83 +1,156 @@
-# Obsidian MCP Agent with Ollama
+# Obsidian Agent Chat Plugin
 
-这个项目使用本地的 Ollama 运行 qwen:0.5b-chat 模型，并通过 MCP (Model Context Protocol) 与 Obsidian 笔记库交互。
+一个强大的 Obsidian 插件，让你可以直接在 Obsidian 中与基于 LangChain 的智能 Agent 进行对话。
 
-## 环境要求
+## 功能特性
 
-1. **Ollama**: 需要安装并运行 Ollama 服务
-2. **Python 依赖**: 安装所需的 Python 包
-3. **Obsidian MCP 服务器**: 需要运行 Obsidian MCP 服务器
+- 🤖 **智能对话**: 与基于 LangChain 的 Agent 进行自然语言对话
+- 📝 **笔记管理**: Agent 可以帮助你管理 Obsidian 笔记库
+- 🔍 **智能搜索**: 搜索和查找笔记内容
+- 💬 **实时聊天**: 流畅的聊天界面，支持对话历史
+- 🖱️ **右键菜单**: 在文档中右键快速访问 Agent 功能
+- 🔄 **文件转换**: 集成 MarkItDown，支持 PDF、Word、Excel 等格式转换为 Markdown
+- ⚙️ **灵活配置**: 可配置 API 服务器地址和连接设置
 
 ## 安装步骤
 
-### 1. 安装 Ollama
-```bash
-# 下载并安装 Ollama
-# 访问 https://ollama.ai/ 下载安装包
+### 1. 启动 Agent API 服务
 
-# 启动 Ollama 服务
-ollama serve
+首先需要启动后端 Agent API 服务：
 
-# 下载 qwen:0.5b-chat 模型
-ollama pull qwen:0.5b-chat
-```
-
-### 2. 安装 Python 依赖
 ```bash
 cd obsidian_agent
-pip install -r requirements.txt
+uv run python src/api_server.py
 ```
 
-### 3. 启动 Obsidian MCP 服务器
+服务将在 `http://127.0.0.1:8001` 启动。
 
-本项目依赖 [Obsidian MCP Server](https://github.com/pnn12138/obsidian_fastmcp) 作为后端 API 服务。
+### 2. 构建插件
 
-请先前往 [obsidian_fastmcp 仓库](https://github.com/pnn12138/obsidian_fastmcp) 按照说明启动 MCP 服务。
-
-**快速指引：**
-
-1. 克隆 [obsidian_fastmcp](https://github.com/pnn12138/obsidian_fastmcp) 仓库到本地
-2. 按照该仓库的 README 配置环境变量和依赖
-3. 启动 MCP 服务（通常为 `python src/server.py` 或 `python -m obsidian_mcp --port 8000`）
-
-详细步骤请参考 [obsidian_fastmcp 的 README](https://github.com/pnn12138/obsidian_fastmcp#readme)。
-
-### 4. 测试连接
 ```bash
-# 测试 Ollama 连接
-python test_ollama_simple.py
+cd obsidian-plugin
+npm install
+npm run build
+```
 
-# 如果一切正常，运行主程序
-python src/qwen_agen.py
+### 3. 安装到 Obsidian
+
+将以下文件复制到你的 Obsidian 保险库的 `.obsidian/plugins/obsidian-agent-chat/` 目录：
+
+- `main.js`
+- `manifest.json`
+- `styles.css`
+
+### 4. 启用插件
+
+1. 打开 Obsidian 设置
+2. 进入"社区插件"
+3. 启用"Obsidian Agent Chat"插件
+
+## 使用方法
+
+### 基本聊天功能
+1. 点击左侧边栏的机器人图标，或使用命令面板搜索"打开 Agent Chat"
+2. 在右侧边栏会出现聊天界面
+3. 在输入框中输入你的问题或指令
+4. Agent 会智能地帮助你管理笔记和回答问题
+
+### 右键菜单功能
+- **选中文本分析**: 在任意文档中选中文本，右键选择"分析选中文本"
+- **文档总结**: 在文档中右键选择"总结当前文档"
+- **文件讨论**: 在文件浏览器中右键文件，选择"讨论这个文件"
+
+### 文件转换功能 (MarkItDown)
+Agent 现在支持将多种文件格式转换为 Markdown：
+
+**支持的格式**:
+- PDF 文档
+- Microsoft Word (.docx)
+- Microsoft Excel (.xlsx)
+- Microsoft PowerPoint (.pptx)
+- 图片文件 (PNG, JPG, etc.)
+- 音频文件
+- HTML 网页
+- 网页 URL
+
+**使用示例**:
+```
+# 转换本地文件
+请帮我转换这个PDF文件：C:\path\to\document.pdf
+
+# 转换网页内容
+请将这个网页转换为Markdown：https://example.com/article
+
+# 转换并保存到Obsidian
+请将这个Word文档转换为Markdown并保存到我的笔记中：C:\path\to\document.docx
 ```
 
 ## 配置
 
-在 `.env` 文件中配置 MCP 服务器地址：
-```
-OBSIDIAN_MCP_IP=http://127.0.0.1:8000/sse
+在插件设置中，你可以配置：
+
+- **API 服务器地址**: Agent API 服务的地址（默认: http://127.0.0.1:8001）
+- **API 密钥**: 如果需要的话
+- **自动连接**: 启动时自动连接到服务器
+
+## 示例对话
+
+### 基础笔记操作
+- "列出我的所有笔记文件"
+- "搜索包含 'Python' 的笔记"
+- "帮我创建一个新的学习笔记"
+- "总结一下我最近的笔记内容"
+
+### 文件转换
+- "请帮我转换这个PDF文件为Markdown：C:\Documents\report.pdf"
+- "将这个网页内容转换为笔记：https://github.com/microsoft/markitdown"
+- "转换这个Word文档并保存到我的笔记中：C:\Documents\meeting.docx"
+
+### 智能分析
+- "分析这段代码的功能"（配合右键菜单使用）
+- "总结这个文档的要点"
+- "这个文件讲的是什么内容？"
+
+## 开发
+
+### 开发模式
+
+```bash
+npm run dev
 ```
 
-## 使用说明
+这会启动监视模式，当你修改代码时会自动重新构建。
 
-1. 确保 Ollama 服务正在运行 (`ollama serve`)
-2. 确保 Obsidian MCP 服务器正在运行
-3. 运行 `python src/qwen_agen.py`
-4. 程序会自动连接到 Ollama 的 qwen:0.5b-chat 模型
-5. 通过自然语言与 Obsidian 笔记库交互
+### 构建生产版本
+
+```bash
+npm run build
+```
+
+## 依赖要求
+
+- Obsidian 0.15.0+
+- Node.js 16+
+- 运行中的 Agent API 服务
 
 ## 故障排除
 
-### Ollama 连接问题
-- 检查 Ollama 服务是否运行: `ollama list`
-- 检查模型是否已下载: `ollama list`
-- 测试 API 连接: `python test_ollama_simple.py`
+### 连接问题
 
-### MCP 服务器问题
-- 确保 MCP 服务器在正确的端口运行
-- 检查 `.env` 文件中的地址配置
-- 确保 Obsidian 笔记库路径正确
+1. 确保 Agent API 服务正在运行
+2. 检查 API 地址配置是否正确
+3. 在插件设置中点击"测试连接"
 
-### 依赖问题
-- 重新安装依赖: `pip install -r requirements.txt`
-- 检查 Python 版本兼容性
+### 插件无法加载
+
+1. 确保所有必需文件都已复制到插件目录
+2. 检查 Obsidian 控制台是否有错误信息
+3. 尝试重新启动 Obsidian
+
+## 许可证
+
+MIT License
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request！

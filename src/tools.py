@@ -10,6 +10,14 @@ import asyncio
 # 1) 载入 .env
 load_dotenv()
 
+# 导入 markitdown <mcreference link="https://github.com/microsoft/markitdown" index="1">1</mcreference>
+try:
+    from markitdown import MarkItDown
+    MARKITDOWN_AVAILABLE = True
+except ImportError:
+    MARKITDOWN_AVAILABLE = False
+    print("警告: markitdown 未安装，文档转换功能将不可用")
+
 # 2) 使用 SSE 从 MCP 获取工具列表
 
 from langchain.tools import StructuredTool, Tool
@@ -107,6 +115,17 @@ class GetRecentChangesInput(BaseModel):
     limit: int = Field(default=10, description="返回数量限制")
     days: int = Field(default=90, description="天数限制")
 
+# MarkItDown 工具输入模型
+class ConvertFileToMarkdownInput(BaseModel):
+    filepath: str = Field(description="要转换的文件路径")
+    save_to_obsidian: bool = Field(default=False, description="是否将转换结果保存到Obsidian")
+    output_filename: Optional[str] = Field(default=None, description="输出文件名（如果保存到Obsidian）")
+
+class ConvertUrlToMarkdownInput(BaseModel):
+    url: str = Field(description="要转换的URL地址")
+    save_to_obsidian: bool = Field(default=False, description="是否将转换结果保存到Obsidian")
+    output_filename: Optional[str] = Field(default=None, description="输出文件名（如果保存到Obsidian）")
+
 # Obsidian 工具函数
 def list_files_in_vault(dirpath: str = "") -> str:
     """列出 Obsidian 保险库中的文件"""
@@ -199,6 +218,134 @@ def get_recent_changes(limit: int = 10, days: int = 90) -> str:
     except Exception as e:
         return f"获取最近更改失败：{str(e)}"
 
+# MarkItDown 工具函数 <mcreference link="https://github.com/microsoft/markitdown" index="1">1</mcreference>
+def convert_file_to_markdown(filepath: str, save_to_obsidian: bool = False, output_filename: Optional[str] = None) -> str:
+    """将文件转换为Markdown格式"""
+    if not MARKITDOWN_AVAILABLE:
+        return "错误：markitdown 库未安装，无法使用文档转换功能"
+    
+    try:
+        # 检查文件是否存在
+        if not os.path.exists(filepath):
+            return f"错误：文件 {filepath} 不存在"
+        
+        # 初始化 MarkItDown <mcreference link="https://dev.to/leapcell/deep-dive-into-microsoft-markitdown-4if5" index="3">3</mcreference>
+        md = MarkItDown()
+        
+        # 转换文件
+        result = md.convert(filepath)
+        markdown_content = result.text_content
+        
+        if save_to_obsidian:
+            # 生成输出文件名
+            if not output_filename:
+                base_name = os.path.splitext(os.path.basename(filepath))[0]
+                output_filename = f"{base_name}_converted.md"
+            
+            # 确保文件名以.md结尾
+            if not output_filename.endswith('.md'):
+                output_filename += '.md'
+            
+            # 保存到 Obsidian
+            try:
+                obsidian_client.put_content(output_filename, markdown_content)
+                return f"文件 {filepath} 已成功转换为Markdown并保存到 {output_filename}\n\n转换内容预览：\n{markdown_content[:500]}..."
+            except Exception as e:
+                return f"文件转换成功，但保存到Obsidian失败：{str(e)}\n\n转换内容：\n{markdown_content}"
+        else:
+            return f"文件 {filepath} 转换结果：\n\n{markdown_content}"
+            
+    except Exception as e:
+        return f"转换文件失败：{str(e)}"
+
+def convert_url_to_markdown(url: str, save_to_obsidian: bool = False, output_filename: Optional[str] = None) -> str:
+    """将URL内容转换为Markdown格式"""
+    if not MARKITDOWN_AVAILABLE:
+        return "错误：markitdown 库未安装，无法使用文档转换功能"
+    
+    try:
+        # 初始化 MarkItDown <mcreference link="https://dev.to/leapcell/deep-dive-into-microsoft-markitdown-4if5" index="3">3</mcreference>
+        md = MarkItDown()
+        
+        # 转换URL
+        result = md.convert(url)
+        markdown_content = result.text_content
+        
+        if save_to_obsidian:
+            # 生成输出文件名
+            if not output_filename:
+                # 从URL生成文件名
+                from urllib.parse import urlparse
+                parsed_url = urlparse(url)
+                domain = parsed_url.netloc.replace('.', '_')
+                path = parsed_url.path.replace('/', '_').replace('.', '_')
+                output_filename = f"{domain}{path}_converted.md"
+            
+            # 确保文件名以.md结尾
+            if not output_filename.endswith('.md'):
+                output_filename += '.md'
+            
+            # 保存到 Obsidian
+            try:
+                obsidian_client.put_content(output_filename, markdown_content)
+                return f"URL {url} 已成功转换为Markdown并保存到 {output_filename}\n\n转换内容预览：\n{markdown_content[:500]}..."
+            except Exception as e:
+                return f"URL转换成功，但保存到Obsidian失败：{str(e)}\n\n转换内容：\n{markdown_content}"
+        else:
+            return f"URL {url} 转换结果：\n\n{markdown_content}"
+            
+    except Exception as e:
+        return f"转换URL失败：{str(e)}"
+
+# 新增工具输入模型
+class CreateFolderInput(BaseModel):
+    folder_path: str = Field(description="要创建的文件夹路径")
+
+class DeleteFolderInput(BaseModel):
+    folder_path: str = Field(description="要删除的文件夹路径")
+
+class InsertLineInput(BaseModel):
+    filepath: str = Field(description="文件路径")
+    line_number: int = Field(description="行号（从1开始）")
+    content: str = Field(description="要插入的内容")
+
+class DeleteLineInput(BaseModel):
+    filepath: str = Field(description="文件路径")
+    line_number: int = Field(description="要删除的行号（从1开始）")
+
+# 新增工具函数
+def create_folder(folder_path: str) -> str:
+    """创建文件夹"""
+    try:
+        obsidian_client.create_folder(folder_path)
+        return f"成功创建文件夹：{folder_path}"
+    except Exception as e:
+        return f"创建文件夹失败：{str(e)}"
+
+def delete_folder(folder_path: str) -> str:
+    """删除文件夹"""
+    try:
+        obsidian_client.delete_folder(folder_path)
+        return f"成功删除文件夹：{folder_path}"
+    except Exception as e:
+        return f"删除文件夹失败：{str(e)}"
+
+def insert_line_at_position(filepath: str, line_number: int, content: str) -> str:
+    """在指定行号插入内容"""
+    try:
+        obsidian_client.patch_content_at_line(filepath, line_number, content, "insert")
+        return f"成功在文件 {filepath} 的第 {line_number} 行插入内容"
+    except Exception as e:
+        return f"插入内容失败：{str(e)}"
+
+def delete_line_at_position(filepath: str, line_number: int) -> str:
+    """删除指定行号的内容"""
+    try:
+        obsidian_client.patch_content_at_line(filepath, line_number, "", "delete")
+        return f"成功删除文件 {filepath} 的第 {line_number} 行"
+    except Exception as e:
+        return f"删除行失败：{str(e)}"
+
 def get_obsidian_tools():
     """获取所有 Obsidian 工具"""
     tools = [
@@ -267,6 +414,49 @@ def get_obsidian_tools():
             description="获取最近的更改",
             func=get_recent_changes,
             args_schema=GetRecentChangesInput
+        ),
+        StructuredTool.from_function(
+            name="create_folder",
+            description="创建文件夹",
+            func=create_folder,
+            args_schema=CreateFolderInput
+        ),
+        StructuredTool.from_function(
+            name="delete_folder",
+            description="删除文件夹",
+            func=delete_folder,
+            args_schema=DeleteFolderInput
+        ),
+        StructuredTool.from_function(
+            name="insert_line_at_position",
+            description="在指定行号插入内容",
+            func=insert_line_at_position,
+            args_schema=InsertLineInput
+        ),
+        StructuredTool.from_function(
+            name="delete_line_at_position",
+            description="删除指定行号的内容",
+            func=delete_line_at_position,
+            args_schema=DeleteLineInput
         )
     ]
+    
+    # 添加 MarkItDown 工具（如果可用）
+    if MARKITDOWN_AVAILABLE:
+        markitdown_tools = [
+            StructuredTool.from_function(
+                name="convert_file_to_markdown",
+                description="将各种格式的文件（PDF、Word、Excel、PowerPoint、图片、音频等）转换为Markdown格式，支持保存到Obsidian",
+                func=convert_file_to_markdown,
+                args_schema=ConvertFileToMarkdownInput
+            ),
+            StructuredTool.from_function(
+                name="convert_url_to_markdown",
+                description="将网页URL内容转换为Markdown格式，支持保存到Obsidian",
+                func=convert_url_to_markdown,
+                args_schema=ConvertUrlToMarkdownInput
+            )
+        ]
+        tools.extend(markitdown_tools)
+    
     return tools

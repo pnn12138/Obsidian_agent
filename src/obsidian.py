@@ -250,6 +250,83 @@ class Obsidian():
 
         return self._safe_call(call_fn)
     
+    def create_folder(self, folder_path: str) -> Any:
+        """Create a folder by creating a placeholder file and then deleting it.
+        
+        Args:
+            folder_path: Path to the folder to create (relative to vault root)
+            
+        Returns:
+            None on success
+        """
+        # Create a temporary file in the folder to ensure the folder exists
+        temp_file_path = f"{folder_path}/.temp_placeholder.md"
+        
+        def call_fn():
+            # Create the temporary file
+            response = requests.put(
+                f"{self.get_base_url()}/vault/{temp_file_path}",
+                headers=self._get_headers() | {'Content-Type': 'text/markdown'},
+                data="# Temporary file to create folder structure",
+                verify=self.verify_ssl,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            
+            # Delete the temporary file, leaving the folder
+            delete_response = requests.delete(
+                f"{self.get_base_url()}/vault/{temp_file_path}",
+                headers=self._get_headers(),
+                verify=self.verify_ssl,
+                timeout=self.timeout
+            )
+            delete_response.raise_for_status()
+            return None
+            
+        return self._safe_call(call_fn)
+
+    def delete_folder(self, folder_path: str) -> Any:
+        """Delete a folder and all its contents.
+        
+        Args:
+            folder_path: Path to the folder to delete (relative to vault root)
+            
+        Returns:
+            None on success
+        """
+        # Note: The delete_file method already supports deleting directories
+        return self.delete_file(folder_path)
+
+    def patch_content_at_line(self, filepath: str, line_number: int, content: str, operation: str = "insert") -> Any:
+        """Insert or delete content at a specific line number.
+        
+        Args:
+            filepath: Path to the file
+            line_number: Line number (1-based)
+            content: Content to insert (ignored for delete operation)
+            operation: "insert" to add content, "delete" to remove lines
+            
+        Returns:
+            None on success
+        """
+        if operation == "insert":
+            # Use line-based targeting for insertion
+            return self.patch_content(filepath, "append", "line", str(line_number), content)
+        elif operation == "delete":
+            # For deletion, we need to get the current content and reconstruct it
+            current_content = self.get_file_contents(filepath)
+            lines = current_content.split('\n')
+            
+            # Remove the specified line (convert to 0-based index)
+            if 1 <= line_number <= len(lines):
+                lines.pop(line_number - 1)
+                new_content = '\n'.join(lines)
+                return self.put_content(filepath, new_content)
+            else:
+                raise Exception(f"Line number {line_number} is out of range (file has {len(lines)} lines)")
+        else:
+            raise Exception(f"Unsupported operation: {operation}. Use 'insert' or 'delete'.")
+
     def get_recent_changes(self, limit: int = 10, days: int = 90) -> Any:
         """Get recently modified files in the vault.
         
